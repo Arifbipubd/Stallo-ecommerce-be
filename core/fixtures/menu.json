@@ -1,0 +1,236 @@
+{
+  "items": [
+    {
+      "id": "bucket-26",
+      "name": "Stallo Special 26 Pcs Bucket",
+      "price": 1050,
+      "category": "special",
+      "blurb": "Shareable feast — crispy pieces made for the whole table.",
+      "featured": true
+    },
+    {
+      "id": "pkg-1",
+      "name": "Package 1",
+      "price": 299,
+      "category": "combo",
+      "blurb": "Everyday chicken combo with Stallo crunch.",
+      "featured": true
+    },
+    {
+      "id": "pkg-2",
+      "name": "Package 2",
+      "price": 275,
+      "category": "combo",
+      "blurb": "Light combo for a quick, satisfying bite."
+    },
+    {
+      "id": "pkg-3",
+      "name": "Package 3",
+      "price": 699,
+      "category": "combo",
+      "blurb": "Bigger share pack when one meal isn't enough.",
+      "featured": true
+    },
+    {
+      "id": "pkg-4",
+      "name": "Package 4",
+      "price": 499,
+      "category": "combo",
+      "blurb": "Mid-size combo built for sharing."
+    },
+    {
+      "id": "pkg-7",
+      "name": "Package 7",
+      "price": 460,
+      "category": "combo",
+      "blurb": "Balanced chicken meal with classic sides energy."
+    },
+    {
+      "id": "pkg-9",
+      "name": "Package 9",
+      "price": 490,
+      "category": "combo",
+      "blurb": "Hearty combo for bigger appetites."
+    },
+    {
+      "id": "pkg-10",
+      "name": "Package 10",
+      "price": 399,
+      "category": "combo",
+      "blurb": "Crowd favorite chicken combo.",
+      "featured": true
+    },
+    {
+      "id": "bogo-burger",
+      "name": "Buy 1 Get 1 Burger Offer",
+      "price": 399,
+      "category": "burger",
+      "blurb": "Double the burger joy — limited offer pricing.",
+      "featured": true
+    },
+    {
+      "id": "garlic-burger",
+      "name": "Garlic Delight Burger",
+      "price": 360,
+      "category": "burger",
+      "blurb": "Bold garlic kick in every bite."
+    },
+    {
+      "id": "grilled-burger",
+      "name": "Grilled Chicken Burger",
+      "price": 350,
+      "category": "burger",
+      "blurb": "Juicy grilled chicken on a soft bun."
+    },
+    {
+      "id": "patty-burger",
+      "name": "Patty Burger",
+      "price": 260,
+      "category": "burger",
+      "blurb": "Classic patty burger done Stallo-style."
+    },
+    {
+      "id": "garlic-wings",
+      "name": "Garlic Wings",
+      "price": 299,
+      "category": "single",
+      "blurb": "Crispy wings finished with garlic heat.",
+      "featured": true
+    },
+    {
+      "id": "naga-wings",
+      "name": "Naga Wings",
+      "price": 299,
+      "category": "single",
+      "blurb": "For spice lovers who want real fire."
+    },
+    {
+      "id": "hot-wings",
+      "name": "Hot Wings",
+      "price": 270,
+      "category": "single",
+      "blurb": "Classic hot wings with a crispy shell."
+    },
+    {
+      "id": "nuggets",
+      "name": "Chicken Nugget",
+      "price": 260,
+      "category": "single",
+      "blurb": "Golden nuggets — snack or side, always right."
+    },
+    {
+      "id": "pops",
+      "name": "Chicken Pops",
+      "price": 270,
+      "category": "single",
+      "blurb": "Bite-sized pops with Stallo seasoning."
+    },
+    {
+      "id": "creamy-pops",
+      "name": "Singapore Creamy Pops",
+      "price": 299,
+      "category": "single",
+      "blurb": "Creamy finish on crispy chicken pops."
+    },
+    {
+      "id": "strips",
+      "name": "Sprinkle Strips",
+      "price": 350,
+      "category": "single",
+      "blurb": "Seasoned strips with a crunchy coat."
+    },
+    {
+      "id": "leg-rib",
+      "name": "Leg + Rib",
+      "price": 299,
+      "category": "single",
+      "blurb": "Two classic cuts in one order."
+    },
+    {
+      "id": "thigh-breast",
+      "name": "Thigh + Breast",
+      "price": 345,
+      "category": "single",
+      "blurb": "Juicy dark and white meat pairing."
+    },
+    {
+      "id": "bbq-leg",
+      "name": "BBQ Chicken Leg",
+      "price": 450,
+      "category": "single",
+      "blurb": "Smoky BBQ glaze on a crispy leg."
+    },
+    {
+      "id": "wrap",
+      "name": "Chicken Wrap",
+      "price": 230,
+      "category": "sides",
+      "blurb": "Handheld chicken wrapped and ready to go."
+    },
+    {
+      "id": "fries",
+      "name": "French Fries L",
+      "price": 160,
+      "category": "sides",
+      "blurb": "Crispy fries to finish the meal."
+    }
+  ],
+  "outlets": [
+    {
+      "id": "dhanmondi",
+      "name": "Dhanmondi / Head Office",
+      "address": "House 275/K (Navana Mashira), Floor 8, Road 16 (New)/27 (Old), Dhanmondi, Dhaka 1209",
+      "phone": "+8801719517242",
+      "phoneDisplay": "01719 517 242"
+    },
+    {
+      "id": "aftabnagar",
+      "name": "Aftab Nagar",
+      "address": "Virtual Kazi Venust, House 34, Block C, Main Road, Aftabnagar, Dhaka 1219",
+      "phone": "+8801974003232",
+      "phoneDisplay": "01974 00 32 32"
+    },
+    {
+      "id": "mogbazar",
+      "name": "Mogbazar",
+      "address": "Gulfesha Plaza, 69 Outer Circular Rd, Mogbazar, Dhaka 1217",
+      "phone": "+8801959449922",
+      "phoneDisplay": "01959 44 99 22"
+    },
+    {
+      "id": "mirpur",
+      "name": "Mirpur",
+      "address": "Doreen Vincita, House 04 Main Road, Section 5, Dhaka 1216",
+      "phone": "+8801939449977",
+      "phoneDisplay": "01939 44 99 77"
+    },
+    {
+      "id": "khilgaon",
+      "name": "Khilgaon",
+      "address": "Plot No. 400/B, Choudhury Para, Khilgaon, Dhaka 1219",
+      "phone": "+8801974014141",
+      "phoneDisplay": "01974 01 41 41"
+    },
+    {
+      "id": "mohammadpur",
+      "name": "Mohammadpur",
+      "address": "1st Floor, Plot Z/19, Block D, Tajmahal Road, Mohammadpur, Dhaka",
+      "phone": "+8801974492244",
+      "phoneDisplay": "01974 49 22 44"
+    },
+    {
+      "id": "bosila",
+      "name": "Bosila",
+      "address": "12 Bosila City Residential Area, Block B, Road-1 (Main Road), Dhaka 1207",
+      "phone": "+8801974242255",
+      "phoneDisplay": "01974 24 22 55"
+    },
+    {
+      "id": "lalmatia",
+      "name": "CPU Smart Kitchen",
+      "address": "5/3 Lalmatia, Block C, Dhaka 1205",
+      "phone": "+8801719517242",
+      "phoneDisplay": "01719 51 72 42"
+    }
+  ]
+}

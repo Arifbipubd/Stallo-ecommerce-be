@@ -35,6 +35,9 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-only-insecure-key-change-me')
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('1', 'true', 'yes')
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1')
+if DEBUG and not os.getenv('DJANGO_ALLOWED_HOSTS'):
+    # Local development: also answer on the machine's LAN IP so you can test from a phone.
+    ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -48,7 +51,9 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # third party
     'rest_framework',
+    'rest_framework.authtoken',
     'corsheaders',
+    'drf_spectacular',
     # local
     'core',
 ]
@@ -146,7 +151,29 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # Django REST framework
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
+    'DEFAULT_PARSER_CLASSES': ['rest_framework.parsers.JSONParser'],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
+    # Public, anonymous API: no session auth (so no CSRF cookie dance for the storefront).
+    # Customers log in with a token (Authorization: Token <key>); no cookies, so no CSRF to worry about.
+    'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.TokenAuthentication'],
+    'DEFAULT_THROTTLE_RATES': {
+        'orders': os.getenv('ORDER_THROTTLE_RATE', '30/hour'),
+        # login + sign-up attempts per IP (slows password guessing)
+        'auth': os.getenv('AUTH_THROTTLE_RATE', '30/hour'),
+    },
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# API docs (Swagger UI at /api/docs/, ReDoc at /api/redoc/, raw schema at /api/schema/)
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Stallo API',
+    'DESCRIPTION': (
+        'Menu, outlets and cash-on-delivery orders for the Stallo Fried Chicken storefront.\n\n'
+        'Prices are always taken from the menu in the database, never from the request.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
 }
 
 # CORS: allow the Next.js storefront (dev server) to call this API
@@ -154,3 +181,8 @@ CORS_ALLOWED_ORIGINS = env_list(
     'CORS_ALLOWED_ORIGINS',
     'http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002',
 )
+if DEBUG:
+    # Local development: allow the storefront from localhost or any private-network address.
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r'^http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+):\d+$',
+    ]
