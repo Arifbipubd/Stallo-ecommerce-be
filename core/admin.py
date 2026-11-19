@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from django.db.models import Count
 
-from .models import Address, Category, Customer, MenuItem, Order, OrderItem, Outlet
+from .models import Address, Category, Customer, MenuItem, Order, OrderItem, Outlet, TodaysOffer
 
 
 @admin.register(Category)
@@ -30,6 +30,37 @@ class MenuItemAdmin(admin.ModelAdmin):
     search_fields = ("name", "slug")
     fields = ("name", "category", "price", "blurb", "is_available", "featured", "sort_order", "slug")
     readonly_fields = ("slug",)  # generated from the name on creation, never changed afterwards
+
+
+@admin.register(TodaysOffer)
+class TodaysOfferAdmin(admin.ModelAdmin):
+    """Pick which menu items appear under "Today's offers"."""
+
+    list_display = ("menu_item", "price", "offer_price", "discount", "category", "sort_order", "is_active", "available")
+    list_editable = ("offer_price", "sort_order", "is_active")
+    fields = ("menu_item", "offer_price", "sort_order", "is_active")
+    list_select_related = ("menu_item", "menu_item__category")
+    autocomplete_fields = ("menu_item",)  # search the whole menu by name
+
+    @admin.display(description="Regular price (৳)", ordering="menu_item__price")
+    def price(self, obj):
+        return obj.menu_item.price
+
+    @admin.display(description="You save")
+    def discount(self, obj):
+        item = obj.menu_item
+        if obj.offer_price is None or obj.offer_price >= item.price:
+            return "-"
+        return f"৳{item.price - obj.offer_price} ({round(100 * (item.price - obj.offer_price) / item.price)}% off)"
+
+    @admin.display(description="Category", ordering="menu_item__category__name")
+    def category(self, obj):
+        return obj.menu_item.category
+
+    @admin.display(description="On the menu", boolean=True)
+    def available(self, obj):
+        # an offer on an item that is switched off (or in a hidden category) is not shown to customers
+        return obj.menu_item.is_available and obj.menu_item.category.is_active
 
 
 @admin.register(Outlet)
@@ -75,12 +106,12 @@ class OrderItemInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("public_id", "customer_name", "phone", "account", "mode", "total", "payment_method", "status", "created_at")
+    list_display = ("public_id", "customer_name", "phone", "account", "mode", "pickup_time", "total", "payment_method", "status", "created_at")
     list_filter = ("status", "mode", "payment_method", "created_at")
     search_fields = ("public_id", "customer_name", "phone")
     date_hierarchy = "created_at"
     inlines = [OrderItemInline]
-    readonly_fields = ("public_id", "customer", "mode", "payment_method", "subtotal", "total", "created_at", "updated_at")
+    readonly_fields = ("public_id", "customer", "mode", "payment_method", "subtotal", "delivery_fee", "total", "created_at", "updated_at")
     actions = ["mark_confirmed", "mark_preparing", "mark_out_for_delivery", "mark_completed", "mark_cancelled"]
 
     @admin.display(description="Account", boolean=True)

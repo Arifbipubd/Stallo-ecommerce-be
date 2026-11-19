@@ -1,6 +1,7 @@
 import secrets
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
 from django.utils.text import slugify
 
@@ -69,8 +70,60 @@ class MenuItem(models.Model):
             self.slug = make_unique_slug(self, self.name, "item")
         super().save(*args, **kwargs)
 
+    @property
+    def offer_price(self):
+        """
+        The lower price while this item is one of today's active offers, else None.
+        An offer price that is not below the regular price (say the menu price was cut later) is ignored.
+        """
+        try:
+            offer = self.offer
+        except ObjectDoesNotExist:
+            return None
+        if offer.is_active and offer.offer_price is not None and offer.offer_price < self.price:
+            return offer.offer_price
+        return None
+
+    @property
+    def current_price(self) -> int:
+        """What a customer pays per piece right now: the offer price if there is one, else the menu price."""
+        offer_price = self.offer_price
+        return self.price if offer_price is None else offer_price
+
     def __str__(self):
         return f"{self.name} (৳{self.price})"
+
+
+class TodaysOffer(models.Model):
+    """
+    A menu item the admin has picked for "Today's offers". The item itself (name, price,
+    category) is still managed under Menu items: this only says which ones to show.
+    """
+
+    menu_item = models.OneToOneField(MenuItem, on_delete=models.CASCADE, related_name="offer")
+    # Empty means "listed as an offer but no special price": it sells at the regular price.
+    offer_price = models.PositiveIntegerField(
+        null=True, blank=False, help_text="What the customer pays today (৳). Must be lower than the regular price."
+    )
+    sort_order = models.PositiveIntegerField(default=0, help_text="Smaller numbers show first.")
+    is_active = models.BooleanField(default=True, help_text="Untick to hide it today without removing it.")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        verbose_name = "today's offer"
+        verbose_name_plural = "today's offers"
+
+    def clean(self):
+        super().clean()
+        item = getattr(self, "menu_item", None) if self.menu_item_id else None
+        if item is not None and self.offer_price is not None and self.offer_price >= item.price:
+            raise ValidationError(
+                {"offer_price": f"The offer price must be lower than the regular price (৳{item.price})."}
+            )
+
+    def __str__(self):
+        return self.menu_item.name
 
 
 class Outlet(models.Model):
@@ -155,9 +208,12 @@ class Order(models.Model):
     landmark = models.CharField(max_length=200, blank=True)
     outlet = models.ForeignKey(Outlet, null=True, blank=True, on_delete=models.SET_NULL, related_name="orders")
     notes = models.TextField(blank=True)
+    # Takeaway only. Empty means "as soon as possible".
+    pickup_time = models.DateTimeField(null=True, blank=True, help_text="When the customer will collect (takeaway). Empty = as soon as possible.")
 
-    subtotal = models.PositiveIntegerField()
-    total = models.PositiveIntegerField(help_text="Items total. Any delivery charge is agreed on the confirmation call.")
+    subtotal = models.PositiveIntegerField(help_text="Items total, before delivery.")
+    delivery_fee = models.PositiveIntegerField(default=0, help_text="Flat delivery charge. 0 for takeaway.")
+    total = models.PositiveIntegerField(help_text="Subtotal + delivery fee: what the customer pays in cash.")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

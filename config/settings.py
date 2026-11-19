@@ -29,10 +29,16 @@ def env_list(name, default=''):
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-only-insecure-key-change-me')
+_DEV_SECRET_KEY = 'dev-only-insecure-key-change-me'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', _DEV_SECRET_KEY)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('1', 'true', 'yes')
+
+if not DEBUG and SECRET_KEY in (_DEV_SECRET_KEY, 'change-me'):  # 'change-me' is the .env.example placeholder
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured('Set DJANGO_SECRET_KEY to a long random value when DJANGO_DEBUG is off.')
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1')
 if DEBUG and not os.getenv('DJANGO_ALLOWED_HOSTS'):
@@ -69,6 +75,10 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+if not DEBUG:
+    # serves the admin's CSS/JS from STATIC_ROOT (runserver does that itself in development)
+    MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -96,7 +106,8 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        # DJANGO_DB_PATH lets a container keep the database on a mounted volume.
+        'NAME': os.getenv('DJANGO_DB_PATH') or BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -145,6 +156,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Static / media
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+if not DEBUG:
+    STORAGES = {
+        'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+        'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+    }
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
@@ -176,6 +192,9 @@ SPECTACULAR_SETTINGS = {
     'COMPONENT_SPLIT_REQUEST': True,
 }
 
+# Needed for the admin login when the API sits behind another origin / HTTPS proxy, e.g. https://api.example.com
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+
 # CORS: allow the Next.js storefront (dev server) to call this API
 CORS_ALLOWED_ORIGINS = env_list(
     'CORS_ALLOWED_ORIGINS',
@@ -186,3 +205,12 @@ if DEBUG:
     CORS_ALLOWED_ORIGIN_REGEXES = [
         r'^http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+):\d+$',
     ]
+
+# Flat delivery charge in BDT, added to delivery orders (takeaway is free).
+# Keep in sync with `deliveryFee` in the storefront's src/data/site.ts.
+DELIVERY_FEE = int(os.getenv('DELIVERY_FEE', '80'))
+
+# Takeaway pickup scheduling (see core/hours.py for the opening hours).
+PICKUP_LEAD_MINUTES = int(os.getenv('PICKUP_LEAD_MINUTES', '30'))  # earliest pickup, from now
+PICKUP_STEP_MINUTES = 15  # pickup times are on the quarter hour
+PICKUP_DAYS_AHEAD = 0  # 0 = today only, 1 = today and tomorrow

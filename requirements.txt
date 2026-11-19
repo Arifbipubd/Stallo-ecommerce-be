@@ -3,6 +3,8 @@ django-cors-headers==4.9.0
 Django==4.2.30
 djangorestframework==3.16.1
 drf-spectacular==0.30.0
+gunicorn==23.0.0
 python-dotenv==1.2.1
 sqlparse==0.5.5
 typing_extensions==4.16.0
+whitenoise==6.9.0

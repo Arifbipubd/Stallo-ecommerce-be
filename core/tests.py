@@ -59,8 +59,8 @@ class CreateOrderTests(ApiTestBase):
         self.assertTrue(body["order_id"].startswith("ST-"))
         self.assertEqual(body["payment_method"], "cod")
         self.assertEqual(body["status"], "pending")
-        # 2 × 299 + 1 × 160
-        self.assertEqual(body["total"], 758)
+        # 2 × 299 + 1 × 160 = 758, plus the ৳80 delivery charge
+        self.assertEqual((body["subtotal"], body["delivery_fee"], body["total"]), (758, 80, 838))
 
         order = Order.objects.get(public_id=body["order_id"])
         self.assertEqual(order.phone, "01719517242")
@@ -70,13 +70,15 @@ class CreateOrderTests(ApiTestBase):
         payload = self.delivery_payload(items=[{"id": "garlic-wings", "qty": 1, "price": 1, "unit_price": 1}], total=1)
         res = self.client.post(self.url, payload, format="json")
         self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.json()["total"], 299)
+        self.assertEqual(res.json()["subtotal"], 299)
+        self.assertEqual(res.json()["total"], 299 + 80)
 
     def test_duplicate_lines_are_merged(self):
         payload = self.delivery_payload(items=[{"id": "fries", "qty": 1}, {"id": "fries", "qty": 2}])
         res = self.client.post(self.url, payload, format="json")
         self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.json()["total"], 480)
+        self.assertEqual(res.json()["subtotal"], 480)
+        self.assertEqual(res.json()["total"], 480 + 80)
         self.assertEqual(len(res.json()["items"]), 1)
 
     def test_takeaway_needs_an_outlet(self):
@@ -133,6 +135,35 @@ class CreateOrderTests(ApiTestBase):
         with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"orders": "2/hour"}):
             codes = [self.client.post(self.url, self.delivery_payload(), format="json").status_code for _ in range(3)]
         self.assertEqual(codes, [201, 201, 429])
+
+
+class DeliveryFeeTests(ApiTestBase):
+    url = "/api/orders/"
+
+    def test_delivery_orders_pay_a_flat_fee_and_it_is_stored(self):
+        res = self.client.post(self.url, self.delivery_payload(items=[{"id": "garlic-wings", "qty": 1}]), format="json")
+        self.assertEqual(res.status_code, 201, res.content)
+        body = res.json()
+        self.assertEqual((body["subtotal"], body["delivery_fee"], body["total"]), (299, 80, 379))
+        order = Order.objects.get(public_id=body["order_id"])
+        self.assertEqual((order.subtotal, order.delivery_fee, order.total), (299, 80, 379))
+
+    def test_takeaway_has_no_delivery_fee(self):
+        payload = self.delivery_payload(mode="takeaway", address="", outlet="mirpur", items=[{"id": "garlic-wings", "qty": 1}])
+        body = self.client.post(self.url, payload, format="json").json()
+        self.assertEqual((body["subtotal"], body["delivery_fee"], body["total"]), (299, 0, 299))
+
+    def test_the_client_cannot_set_the_delivery_fee(self):
+        payload = self.delivery_payload(items=[{"id": "garlic-wings", "qty": 1}], delivery_fee=0, total=1)
+        body = self.client.post(self.url, payload, format="json").json()
+        self.assertEqual((body["delivery_fee"], body["total"]), (80, 379))
+
+    def test_fee_comes_from_settings(self):
+        from django.test import override_settings
+
+        with override_settings(DELIVERY_FEE=120):
+            body = self.client.post(self.url, self.delivery_payload(items=[{"id": "garlic-wings", "qty": 1}]), format="json").json()
+        self.assertEqual((body["delivery_fee"], body["total"]), (120, 419))
 
 
 class AccountHelpers(ApiTestBase):
@@ -401,8 +432,28 @@ class AdminPanelTests(ApiTestBase):
             "/admin/core/category/add/",
             "/admin/core/menuitem/",
             "/admin/core/menuitem/add/",
+            "/admin/core/todaysoffer/",
+            "/admin/core/todaysoffer/add/",
         ]:
             self.assertEqual(self.client.get(url).status_code, 200, url)
+
+    def test_pick_a_todays_offer_from_the_menu_in_admin(self):
+        from .models import TodaysOffer
+
+        TodaysOffer.objects.all().delete()
+        fries = MenuItem.objects.get(slug="fries")
+        res = self.client.post(
+            "/admin/core/todaysoffer/add/", {"menu_item": fries.pk, "offer_price": fries.price - 10, "sort_order": 1, "is_active": "on"}
+        )
+        self.assertEqual(res.status_code, 302, getattr(res, "context", None) and res.context["adminform"].form.errors)
+        self.assertEqual([i["id"] for i in self.client.get("/api/offers/today/").json()], ["fries"])
+
+    def test_menu_item_autocomplete_works_for_the_offer_picker(self):
+        res = self.client.get(
+            "/admin/autocomplete/", {"term": "fries", "app_label": "core", "model_name": "todaysoffer", "field_name": "menu_item"}
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(any("Fries" in r["text"] for r in res.json()["results"]))
 
     def test_add_category_and_product_in_admin_without_typing_a_slug(self):
         res = self.client.post(
@@ -426,4 +477,269 @@ class AdminPanelTests(ApiTestBase):
             "/api/orders/", self.delivery_payload(items=[{"id": "cold-coffee", "qty": 2}]), format="json"
         )
         self.assertEqual(order.status_code, 201, order.content)
-        self.assertEqual(order.json()["total"], 300)
+        self.assertEqual(order.json()["total"], 300 + 80)
+
+
+def at_dhaka(day, hour, minute=0):
+    """A fixed 'now' in Dhaka time (UTC+6, no daylight saving)."""
+    from datetime import datetime, timedelta, timezone as dt_timezone
+
+    return datetime(2026, 11, day, hour, minute, tzinfo=dt_timezone(timedelta(hours=6)))
+
+
+class TodaysOfferTests(ApiTestBase):
+    url = "/api/offers/today/"
+
+    def slugs(self):
+        return [i["id"] for i in self.client.get(self.url).json()]
+
+    def test_starter_offers_come_from_the_seed_in_order(self):
+        self.assertEqual(self.slugs(), ["bucket-26", "bogo-burger", "pkg-3", "pkg-10"])
+
+    def test_response_has_the_menu_item_shape(self):
+        first = self.client.get(self.url).json()[0]
+        self.assertEqual(
+            set(first), {"id", "name", "price", "offer_price", "category", "category_name", "blurb", "featured"}
+        )
+
+    def test_admin_can_pick_any_menu_item_and_order_them(self):
+        from .models import TodaysOffer
+
+        TodaysOffer.objects.all().delete()
+        TodaysOffer.objects.create(menu_item=MenuItem.objects.get(slug="fries"), sort_order=2)
+        TodaysOffer.objects.create(menu_item=MenuItem.objects.get(slug="garlic-wings"), sort_order=1)
+        self.assertEqual(self.slugs(), ["garlic-wings", "fries"])
+
+    def test_switched_off_or_unavailable_items_are_not_shown(self):
+        from .models import TodaysOffer
+
+        TodaysOffer.objects.filter(menu_item__slug="pkg-3").update(is_active=False)
+        MenuItem.objects.filter(slug="pkg-10").update(is_available=False)
+        self.assertEqual(self.slugs(), ["bucket-26", "bogo-burger"])
+
+    def test_an_item_cannot_be_an_offer_twice(self):
+        from django.db import IntegrityError, transaction
+        from .models import TodaysOffer
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            TodaysOffer.objects.create(menu_item=MenuItem.objects.get(slug="bucket-26"))
+
+    def test_seeding_again_does_not_bring_back_removed_offers(self):
+        from .models import TodaysOffer
+
+        TodaysOffer.objects.all().delete()
+        TodaysOffer.objects.create(menu_item=MenuItem.objects.get(slug="fries"))
+        call_command("seed_menu", verbosity=0)
+        self.assertEqual(self.slugs(), ["fries"])
+
+    def test_offer_price_follows_the_menu_item(self):
+        MenuItem.objects.filter(slug="bucket-26").update(price=999)
+        self.assertEqual(self.client.get(self.url).json()[0]["price"], 999)
+
+
+class PickupTimeTests(ApiTestBase):
+    url = "/api/orders/"
+
+    def book(self, now, pickup, **overrides):
+        payload = self.delivery_payload(mode="takeaway", address="", outlet="mirpur", **overrides)
+        if pickup is not None:
+            payload["pickup_time"] = pickup.isoformat() if hasattr(pickup, "isoformat") else pickup
+        with patch("django.utils.timezone.now", return_value=now):
+            return self.client.post(self.url, payload, format="json")
+
+    def slots(self, now):
+        with patch("django.utils.timezone.now", return_value=now):
+            return self.client.get("/api/pickup-slots/").json()
+
+    # --- the list of times --------------------------------------------------------------
+
+    def test_slots_start_30_minutes_out_on_the_quarter_hour(self):
+        data = self.slots(at_dhaka(18, 14, 2))  # Wednesday 2:02 pm
+        today = data["days"][0]
+        self.assertEqual(today["label"], "Today")
+        self.assertEqual(today["slots"][0]["label"], "2:45 pm")  # 2:32 rounded up
+        self.assertTrue(data["open_now"])
+        self.assertEqual(data["lead_minutes"], 30)
+
+    def test_weekday_slots_stop_15_minutes_before_10pm(self):
+        today = self.slots(at_dhaka(18, 14))["days"][0]
+        self.assertEqual(today["slots"][-1]["label"], "9:45 pm")
+
+    def test_friday_and_saturday_run_an_hour_later(self):
+        today = self.slots(at_dhaka(20, 14))["days"][0]  # Friday
+        self.assertEqual(today["slots"][-1]["label"], "10:45 pm")
+
+    def test_only_today_is_offered(self):
+        data = self.slots(at_dhaka(18, 14))
+        self.assertEqual([d["label"] for d in data["days"]], ["Today"])
+
+    def test_after_closing_nothing_is_left(self):
+        data = self.slots(at_dhaka(18, 22, 30))
+        self.assertFalse(data["open_now"])
+        self.assertEqual(data["days"], [])
+
+    def test_before_opening_today_starts_at_opening(self):
+        data = self.slots(at_dhaka(18, 7))
+        self.assertFalse(data["open_now"])
+        self.assertEqual(data["days"][0]["slots"][0]["label"], "10:00 am")
+
+    def test_every_offered_slot_is_accepted(self):
+        now = at_dhaka(18, 14)
+        for day in self.slots(now)["days"]:
+            for slot in (day["slots"][0], day["slots"][-1]):
+                res = self.book(now, slot["value"])
+                self.assertEqual(res.status_code, 201, (slot, res.json()))
+
+    # --- placing an order ---------------------------------------------------------------
+
+    def test_pickup_time_is_saved_and_returned(self):
+        now = at_dhaka(18, 14)
+        res = self.book(now, at_dhaka(18, 16, 15))
+        self.assertEqual(res.status_code, 201, res.json())
+        self.assertEqual(Order.objects.get(public_id=res.json()["order_id"]).pickup_time, at_dhaka(18, 16, 15))
+        self.assertTrue(res.json()["pickup_time"].startswith("2026-11-18T16:15:00"))
+
+    def test_no_pickup_time_means_as_soon_as_possible(self):
+        res = self.book(at_dhaka(18, 14), None)
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.json()["pickup_time"])
+
+    def test_another_day_is_rejected(self):
+        res = self.book(at_dhaka(18, 14), at_dhaka(19, 12))  # tomorrow
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("today only", res.json()["pickup_time"][0])
+        self.assertEqual(self.book(at_dhaka(18, 14), at_dhaka(25, 12)).status_code, 400)
+
+    def test_too_soon_is_rejected(self):
+        res = self.book(at_dhaka(18, 14), at_dhaka(18, 14, 15))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("at least 30 minutes", res.json()["pickup_time"][0])
+
+    def test_a_time_in_the_past_is_rejected(self):
+        self.assertEqual(self.book(at_dhaka(18, 14), at_dhaka(18, 9)).status_code, 400)
+
+    def test_slot_picked_a_few_minutes_ago_still_works(self):
+        # offered as the earliest at 2:02 (2:45); the form is submitted at 2:12
+        self.assertEqual(self.book(at_dhaka(18, 14, 12), at_dhaka(18, 14, 45)).status_code, 201)
+
+    def test_off_the_quarter_hour_is_rejected(self):
+        res = self.book(at_dhaka(18, 14), at_dhaka(18, 16, 10))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("quarter hour", res.json()["pickup_time"][0])
+
+    def test_outside_opening_hours_is_rejected(self):
+        now = at_dhaka(18, 14)
+        self.assertEqual(self.book(now, at_dhaka(18, 22)).status_code, 400)  # closing time itself
+        self.assertEqual(self.book(now, at_dhaka(18, 21, 45)).status_code, 201)  # last slot
+        self.assertEqual(self.book(at_dhaka(18, 7), at_dhaka(18, 9, 45)).status_code, 400)  # before opening
+        self.assertEqual(self.book(at_dhaka(18, 7), at_dhaka(18, 10)).status_code, 201)  # opening time
+        self.assertEqual(self.book(at_dhaka(20, 14), at_dhaka(20, 22, 45)).status_code, 201)  # Friday is later
+
+    def test_garbage_is_rejected(self):
+        self.assertEqual(self.book(at_dhaka(18, 14), "tomorrow-ish").status_code, 400)
+
+    def test_delivery_orders_ignore_a_pickup_time(self):
+        payload = self.delivery_payload()
+        payload["pickup_time"] = at_dhaka(18, 16).isoformat()
+        with patch("django.utils.timezone.now", return_value=at_dhaka(18, 14)):
+            res = self.client.post(self.url, payload, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.json()["pickup_time"])
+        self.assertIsNone(Order.objects.get(public_id=res.json()["order_id"]).pickup_time)
+
+
+class OfferPriceTests(ApiTestBase):
+    """An offer shows the regular price next to a lower offer price, and the lower price is what is charged."""
+
+    def setUp(self):
+        super().setUp()
+        from .models import TodaysOffer
+
+        self.offer = TodaysOffer.objects.get(menu_item__slug="bucket-26")  # regular price 1050
+        self.offer.offer_price = 899
+        self.offer.save()
+
+    def offers(self):
+        return {i["id"]: i for i in self.client.get("/api/offers/today/").json()}
+
+    def order(self, items, **overrides):
+        payload = self.delivery_payload(items=items, **overrides)
+        return self.client.post("/api/orders/", payload, format="json")
+
+    def test_offer_shows_both_prices(self):
+        item = self.offers()["bucket-26"]
+        self.assertEqual((item["price"], item["offer_price"]), (1050, 899))
+
+    def test_offer_without_a_special_price_has_no_offer_price(self):
+        self.assertIsNone(self.offers()["bogo-burger"]["offer_price"])
+
+    def test_menu_endpoint_carries_the_offer_price_too(self):
+        by_id = {i["id"]: i for i in self.client.get("/api/menu/").json()}
+        self.assertEqual(by_id["bucket-26"]["offer_price"], 899)
+        self.assertIsNone(by_id["fries"]["offer_price"])
+
+    def test_order_is_charged_the_offer_price(self):
+        res = self.order([{"id": "bucket-26", "qty": 2}])
+        body = res.json()
+        self.assertEqual(res.status_code, 201, body)
+        self.assertEqual(body["items"][0]["unit_price"], 899)
+        self.assertEqual(body["subtotal"], 1798)
+        self.assertEqual(body["total"], 1798 + 80)
+        self.assertEqual(Order.objects.get(public_id=body["order_id"]).items.get().unit_price, 899)
+
+    def test_other_items_still_cost_the_regular_price(self):
+        body = self.order([{"id": "bucket-26", "qty": 1}, {"id": "fries", "qty": 1}]).json()
+        fries = MenuItem.objects.get(slug="fries").price
+        self.assertEqual(body["subtotal"], 899 + fries)
+
+    def test_client_cannot_set_the_price(self):
+        body = self.order([{"id": "bucket-26", "qty": 1, "price": 1, "unit_price": 1}]).json()
+        self.assertEqual(body["subtotal"], 899)
+
+    def test_switching_the_offer_off_restores_the_regular_price(self):
+        self.offer.is_active = False
+        self.offer.save()
+        self.assertEqual(self.order([{"id": "bucket-26", "qty": 1}]).json()["subtotal"], 1050)
+        self.assertNotIn("bucket-26", self.offers())
+        self.assertIsNone({i["id"]: i for i in self.client.get("/api/menu/").json()}["bucket-26"]["offer_price"])
+
+    def test_removing_the_offer_restores_the_regular_price(self):
+        self.offer.delete()
+        self.assertEqual(self.order([{"id": "bucket-26", "qty": 1}]).json()["subtotal"], 1050)
+
+    def test_an_old_order_keeps_the_price_it_was_paid_at(self):
+        order_id = self.order([{"id": "bucket-26", "qty": 1}]).json()["order_id"]
+        self.offer.delete()
+        self.assertEqual(Order.objects.get(public_id=order_id).items.get().unit_price, 899)
+
+    def test_offer_price_not_below_the_regular_price_is_ignored(self):
+        # e.g. the menu price was cut to 800 after the offer was set at 899
+        MenuItem.objects.filter(slug="bucket-26").update(price=800)
+        self.assertIsNone(self.offers()["bucket-26"]["offer_price"])
+        self.assertEqual(self.order([{"id": "bucket-26", "qty": 1}]).json()["subtotal"], 800)
+
+    def test_admin_rejects_an_offer_price_that_is_not_lower(self):
+        from django.contrib.auth import get_user_model
+        from .models import TodaysOffer
+
+        self.client.force_login(get_user_model().objects.create_superuser("boss", "b@example.com", "pw-12345"))
+        TodaysOffer.objects.all().delete()
+        fries = MenuItem.objects.get(slug="fries")
+        for bad in (fries.price, fries.price + 50):
+            res = self.client.post("/admin/core/todaysoffer/add/", {"menu_item": fries.pk, "offer_price": bad, "sort_order": 1, "is_active": "on"})
+            self.assertEqual(res.status_code, 200, bad)  # form shown again with an error
+            self.assertContains(res, "must be lower than the regular price")
+        self.assertFalse(TodaysOffer.objects.exists())
+        ok = self.client.post("/admin/core/todaysoffer/add/", {"menu_item": fries.pk, "offer_price": fries.price - 10, "sort_order": 1, "is_active": "on"})
+        self.assertEqual(ok.status_code, 302)
+        self.assertEqual(self.offers()["fries"]["offer_price"], fries.price - 10)
+
+    def test_admin_requires_an_offer_price(self):
+        from django.contrib.auth import get_user_model
+        from .models import TodaysOffer
+
+        self.client.force_login(get_user_model().objects.create_superuser("boss", "b@example.com", "pw-12345"))
+        TodaysOffer.objects.all().delete()
+        res = self.client.post("/admin/core/todaysoffer/add/", {"menu_item": MenuItem.objects.get(slug="fries").pk, "sort_order": 1, "is_active": "on"})
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TodaysOffer.objects.exists())

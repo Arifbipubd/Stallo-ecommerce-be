@@ -1,10 +1,12 @@
 import re
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.db import transaction
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from . import hours
 from .models import Address, Category, Customer, MenuItem, Order, OrderItem, Outlet
 
 _PHONE_RE = re.compile(r"^(?:\+?88)?(01[3-9]\d{8})$")
@@ -33,10 +35,32 @@ class MenuItemSerializer(serializers.ModelSerializer):
     # the category's id (slug); its display name is available from /api/categories/
     category = serializers.CharField(source="category.slug")
     category_name = serializers.CharField(source="category.name")
+    # price is the regular price; offer_price is the lower price today when it is one of today's offers
+    # (otherwise null). Orders are charged offer_price when there is one.
+    offer_price = serializers.IntegerField(read_only=True, allow_null=True)
 
     class Meta:
         model = MenuItem
-        fields = ["id", "name", "price", "category", "category_name", "blurb", "featured"]
+        fields = ["id", "name", "price", "offer_price", "category", "category_name", "blurb", "featured"]
+
+
+class PickupSlotSerializer(serializers.Serializer):
+    """Documentation only: one bookable pickup time."""
+
+    value = serializers.CharField(help_text="Send this as `pickup_time`.")
+    label = serializers.CharField(help_text="For display, e.g. 3:45 pm.")
+
+
+class PickupDaySerializer(serializers.Serializer):
+    date = serializers.DateField()
+    label = serializers.CharField(help_text="Today or Tomorrow.")
+    slots = PickupSlotSerializer(many=True)
+
+
+class PickupSlotsSerializer(serializers.Serializer):
+    open_now = serializers.BooleanField(help_text="False when the outlets are closed, so 'as soon as possible' is not on offer.")
+    lead_minutes = serializers.IntegerField(help_text="Earliest pickup is this many minutes from now.")
+    days = PickupDaySerializer(many=True)
 
 
 class OutletSerializer(serializers.ModelSerializer):
@@ -67,6 +91,11 @@ class OrderCreateSerializer(serializers.Serializer):
     landmark = serializers.CharField(required=False, allow_blank=True, max_length=200, default="")
     outlet = serializers.CharField(required=False, allow_blank=True, max_length=60, default="")
     notes = serializers.CharField(required=False, allow_blank=True, max_length=500, default="")
+    pickup_time = serializers.DateTimeField(
+        required=False, allow_null=True, default=None,
+        help_text="Takeaway only: when you'll collect (ISO 8601). Leave out for as soon as possible. "
+        "Get the choices from GET /api/pickup-slots/.",
+    )
     items = OrderLineInputSerializer(many=True, allow_empty=False)
 
     def validate_phone(self, value):
@@ -81,7 +110,9 @@ class OrderCreateSerializer(serializers.Serializer):
         if any(qty > MAX_QTY for qty in merged.values()):
             raise serializers.ValidationError(f"You can order at most {MAX_QTY} of one item.")
 
-        found = {m.slug: m for m in MenuItem.objects.select_related("category").filter(slug__in=merged.keys())}
+        found = {
+            m.slug: m for m in MenuItem.objects.select_related("category", "offer").filter(slug__in=merged.keys())
+        }
         missing = [slug for slug in merged if slug not in found]
         if missing:
             raise serializers.ValidationError(f"Unknown menu item: {', '.join(missing)}.")
@@ -98,6 +129,7 @@ class OrderCreateSerializer(serializers.Serializer):
             if len(attrs.get("address", "").strip()) < 8:
                 raise serializers.ValidationError({"address": "Add your full delivery address."})
             attrs["outlet"] = None
+            attrs["pickup_time"] = None  # only meaningful for takeaway
         else:
             slug = attrs.get("outlet", "")
             outlet = Outlet.objects.filter(slug=slug, is_active=True).first() if slug else None
@@ -106,6 +138,10 @@ class OrderCreateSerializer(serializers.Serializer):
             attrs["outlet"] = outlet
             attrs["address"] = ""
             attrs["landmark"] = ""
+            if attrs.get("pickup_time"):
+                problem = hours.check_pickup_time(attrs["pickup_time"])
+                if problem:
+                    raise serializers.ValidationError({"pickup_time": problem})
         return attrs
 
     @transaction.atomic
@@ -114,7 +150,10 @@ class OrderCreateSerializer(serializers.Serializer):
         request = self.context.get("request")
         user = getattr(request, "user", None)
         customer = getattr(user, "customer", None) if user and user.is_authenticated else None
-        subtotal = sum(l["menu_item"].price * l["qty"] for l in lines)
+        # each piece costs its offer price while it is one of today's offers, else the menu price
+        subtotal = sum(l["menu_item"].current_price * l["qty"] for l in lines)
+        # delivery orders pay a flat fee; takeaway is free. Decided here, never by the client.
+        delivery_fee = settings.DELIVERY_FEE if validated_data["mode"] == Order.Mode.DELIVERY else 0
         order = Order.objects.create(
             mode=validated_data["mode"],
             customer_name=validated_data["name"].strip(),
@@ -123,9 +162,11 @@ class OrderCreateSerializer(serializers.Serializer):
             landmark=validated_data["landmark"].strip(),
             outlet=validated_data["outlet"],
             notes=validated_data["notes"].strip(),
+            pickup_time=validated_data.get("pickup_time"),
             payment_method=Order.Payment.COD,
             subtotal=subtotal,
-            total=subtotal,
+            delivery_fee=delivery_fee,
+            total=subtotal + delivery_fee,
             customer=customer,
         )
         if customer and order.mode == Order.Mode.DELIVERY and not customer.addresses.exists():
@@ -138,7 +179,7 @@ class OrderCreateSerializer(serializers.Serializer):
                 order=order,
                 menu_item=l["menu_item"],
                 name=l["menu_item"].name,
-                unit_price=l["menu_item"].price,
+                unit_price=l["menu_item"].current_price,
                 quantity=l["qty"],
             )
             for l in lines
@@ -165,7 +206,9 @@ class OrderReceiptSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["order_id", "status", "mode", "payment_method", "outlet", "subtotal", "total", "items"]
+        fields = [
+            "order_id", "status", "mode", "payment_method", "outlet", "pickup_time", "subtotal", "delivery_fee", "total", "items",
+        ]
 
     @extend_schema_field(ReceiptLineSerializer(many=True))
     def get_items(self, order):

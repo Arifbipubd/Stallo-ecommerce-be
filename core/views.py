@@ -6,6 +6,9 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from django.conf import settings
+
+from . import hours
 from .auth import SoftTokenAuthentication
 from .models import Address, Category, MenuItem, Order, Outlet
 from .serializers import (
@@ -21,6 +24,7 @@ from .serializers import (
     OrderCreateSerializer,
     OrderReceiptSerializer,
     OutletSerializer,
+    PickupSlotsSerializer,
 )
 
 
@@ -41,7 +45,7 @@ def health(request):
 class MenuListView(generics.ListAPIView):
     """All menu items that can currently be ordered."""
 
-    queryset = MenuItem.objects.filter(is_available=True, category__is_active=True).select_related("category")
+    queryset = MenuItem.objects.filter(is_available=True, category__is_active=True).select_related("category", "offer")
     serializer_class = MenuItemSerializer
     pagination_class = None
 
@@ -51,6 +55,43 @@ class CategoryListView(generics.ListAPIView):
     queryset = Category.objects.filter(is_active=True)
     serializer_class = CategorySerializer
     pagination_class = None
+
+
+@extend_schema(
+    tags=["Menu"],
+    summary="Today's offers",
+    description=(
+        "The menu items the admin picked for today's offers, in order. Same shape as /api/menu/: `price` is the "
+        "regular price and `offer_price` the lower price today (null when no special price was set)."
+    ),
+)
+class TodaysOffersView(generics.ListAPIView):
+    serializer_class = MenuItemSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return (
+            MenuItem.objects.filter(offer__is_active=True, is_available=True, category__is_active=True)
+            .select_related("category", "offer")
+            .order_by("offer__sort_order", "offer__id")
+        )
+
+
+@extend_schema(
+    tags=["Orders"],
+    summary="Takeaway pickup times",
+    description=(
+        "The times a customer can still choose to collect a takeaway order today, on the quarter "
+        "hour. Send the chosen `value` as `pickup_time` when placing the order; leave it out for as soon as "
+        "possible."
+    ),
+    responses=PickupSlotsSerializer,
+)
+@api_view(["GET"])
+def pickup_slots(request):
+    return Response(
+        {"open_now": hours.is_open_now(), "lead_minutes": settings.PICKUP_LEAD_MINUTES, "days": hours.pickup_days()}
+    )
 
 
 @extend_schema(tags=["Outlets"], summary="List active outlets")
@@ -65,7 +106,7 @@ class OutletListView(generics.ListAPIView):
     summary="Place a cash-on-delivery order",
     description=(
         "Prices come from the menu in the database. Delivery needs an address; "
-        "takeaway needs an outlet id. Errors are 400 with {field: [messages]}; "
+        "takeaway needs an outlet id and may pick a pickup_time (see /api/pickup-slots/). Errors are 400 with {field: [messages]}; "
         "too many orders from one IP gives 429."
     ),
     request=OrderCreateSerializer,
