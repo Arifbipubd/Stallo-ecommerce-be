@@ -1,8 +1,9 @@
 from django.contrib import admin
+from django.utils.html import format_html
 
 from django.db.models import Count
 
-from .models import Address, Category, Customer, MenuItem, Order, OrderItem, Outlet, TodaysOffer
+from .models import AddOn, Address, Category, Customer, MenuItem, Order, OrderItem, Outlet, TodaysOffer
 
 
 @admin.register(Category)
@@ -21,15 +22,35 @@ class CategoryAdmin(admin.ModelAdmin):
         return obj._items
 
 
+def _thumb(item, height=44):
+    if not item.image:
+        return "-"
+    return format_html(
+        '<img src="{}" alt="" style="height:{}px;width:{}px;object-fit:cover;border-radius:8px">',
+        item.image.url,
+        height,
+        round(height * 1.25),
+    )
+
+
 @admin.register(MenuItem)
 class MenuItemAdmin(admin.ModelAdmin):
-    list_display = ("name", "category", "price", "is_available", "featured", "sort_order")
+    list_display = ("thumb", "name", "category", "price", "is_available", "featured", "sort_order")
+    list_display_links = ("thumb", "name")
     list_editable = ("price", "is_available", "featured", "sort_order")
     list_filter = ("category", "is_available", "featured")
     list_select_related = ("category",)
     search_fields = ("name", "slug")
-    fields = ("name", "category", "price", "blurb", "is_available", "featured", "sort_order", "slug")
-    readonly_fields = ("slug",)  # generated from the name on creation, never changed afterwards
+    fields = ("name", "category", "price", "blurb", "image", "preview", "is_available", "featured", "sort_order", "slug")
+    readonly_fields = ("slug", "preview")  # slug: generated from the name on creation, never changed afterwards
+
+    @admin.display(description="Picture")
+    def thumb(self, obj):
+        return _thumb(obj)
+
+    @admin.display(description="Current picture")
+    def preview(self, obj):
+        return _thumb(obj, height=160)
 
 
 @admin.register(TodaysOffer)
@@ -60,6 +81,30 @@ class TodaysOfferAdmin(admin.ModelAdmin):
     @admin.display(description="On the menu", boolean=True)
     def available(self, obj):
         # an offer on an item that is switched off (or in a hidden category) is not shown to customers
+        return obj.menu_item.is_available and obj.menu_item.category.is_active
+
+
+@admin.register(AddOn)
+class AddOnAdmin(admin.ModelAdmin):
+    """Pick which menu items are suggested as extras when something is added to the cart."""
+
+    list_display = ("menu_item", "price", "category", "sort_order", "is_active", "available")
+    list_editable = ("sort_order", "is_active")
+    fields = ("menu_item", "sort_order", "is_active")
+    list_select_related = ("menu_item", "menu_item__category")
+    autocomplete_fields = ("menu_item",)  # search the whole menu by name
+
+    @admin.display(description="Price (৳)", ordering="menu_item__price")
+    def price(self, obj):
+        return obj.menu_item.price
+
+    @admin.display(description="Category", ordering="menu_item__category__name")
+    def category(self, obj):
+        return obj.menu_item.category
+
+    @admin.display(description="On the menu", boolean=True)
+    def available(self, obj):
+        # an extra that is switched off (or in a hidden category) is not shown to customers
         return obj.menu_item.is_available and obj.menu_item.category.is_active
 
 

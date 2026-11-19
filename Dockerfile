@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     DJANGO_DEBUG=False \
-    DJANGO_DB_PATH=/data/db.sqlite3
+    DJANGO_DB_PATH=/data/db.sqlite3 \
+    DJANGO_MEDIA_ROOT=/data/media
 
 WORKDIR /app
 

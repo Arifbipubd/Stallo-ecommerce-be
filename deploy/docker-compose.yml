@@ -1,0 +1,73 @@
+# Stallo on one server: the storefront, the API, and Caddy (HTTPS, automatic certificates).
+#
+# Expects the two repos side by side:
+#   stallo/
+#     stallo-backend/    <- this repo (this file lives in deploy/)
+#     stallo-frontend/
+#
+# Run from this folder:   docker compose up -d --build
+# Settings come from deploy/.env (copy .env.example). See DEPLOY.md.
+services:
+  api:
+    build:
+      context: ..
+    image: stallo-backend
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in deploy/.env}
+      DJANGO_DEBUG: "False"
+      # localhost / 127.0.0.1 let the container's own health check in
+      DJANGO_ALLOWED_HOSTS: ${API_DOMAIN:?Set API_DOMAIN in deploy/.env},localhost,127.0.0.1
+      CORS_ALLOWED_ORIGINS: https://${SITE_DOMAIN:?Set SITE_DOMAIN in deploy/.env}
+      CSRF_TRUSTED_ORIGINS: https://${API_DOMAIN}
+      # trust Caddy's forwarded headers (real visitor IP for rate limits, https, secure cookies)
+      DJANGO_BEHIND_PROXY: "True"
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-}
+      DELIVERY_FEE: ${DELIVERY_FEE:-80}
+      PICKUP_LEAD_MINUTES: ${PICKUP_LEAD_MINUTES:-30}
+      ORDER_THROTTLE_RATE: ${ORDER_THROTTLE_RATE:-30/hour}
+      AUTH_THROTTLE_RATE: ${AUTH_THROTTLE_RATE:-30/hour}
+      # product pictures go to this S3 bucket (empty = saved on the server's disk, fine for trying things out)
+      AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME:-}
+      AWS_S3_REGION_NAME: ${AWS_S3_REGION_NAME:-}
+      AWS_S3_CUSTOM_DOMAIN: ${AWS_S3_CUSTOM_DOMAIN:-}
+    volumes:
+      - stallo-data:/data   # the SQLite database: your orders live here (see backup.sh)
+    expose:
+      - "8000"              # reachable by Caddy only, never published to the internet
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../../stallo-frontend
+      args:
+        # baked into the site at build time: where the visitor's browser finds the API
+        NEXT_PUBLIC_API_URL: https://${API_DOMAIN}
+        NEXT_PUBLIC_ACCOUNTS_ENABLED: ${NEXT_PUBLIC_ACCOUNTS_ENABLED:-}
+    image: stallo-frontend
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # the certificates: keep this volume
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+volumes:
+  stallo-data:
+  caddy-data:
+  caddy-config:

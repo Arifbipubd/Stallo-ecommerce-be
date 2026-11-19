@@ -21,6 +21,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 
+def env_bool(name, default=False):
+    return os.getenv(name, str(default)).lower() in ('1', 'true', 'yes')
+
+
 def env_list(name, default=''):
     return [v.strip() for v in os.getenv(name, default).split(',') if v.strip()]
 
@@ -156,13 +160,51 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Static / media
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-if not DEBUG:
-    STORAGES = {
-        'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-        'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
-    }
 MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = Path(os.getenv('DJANGO_MEDIA_ROOT', BASE_DIR / 'media'))
+
+# Product pictures uploaded in admin. With AWS_STORAGE_BUCKET_NAME set they go to that S3 bucket (only the
+# file's name is kept in the database; the public address is built from it). Without it they are saved
+# on this server's disk (MEDIA_ROOT), which is fine for local work.
+AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME', '')
+USE_S3 = bool(AWS_STORAGE_BUCKET_NAME)
+_s3_region = os.getenv('AWS_S3_REGION_NAME', '')
+# The address pictures are shown from. Naming the region gives a direct link (the region-less address only
+# works through a redirect for buckets outside us-east-1). A CloudFront domain, if you use one, wins.
+_s3_domain = os.getenv('AWS_S3_CUSTOM_DOMAIN') or (
+    f'{AWS_STORAGE_BUCKET_NAME}.s3.{_s3_region}.amazonaws.com' if _s3_region else None
+)
+if USE_S3:
+    _default_storage = {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+        'OPTIONS': {
+            'bucket_name': AWS_STORAGE_BUCKET_NAME,
+            'region_name': _s3_region or None,
+            # Credentials: on EC2 use an IAM role (nothing to configure); elsewhere set
+            # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, which boto3 reads by itself.
+            # Public pictures: plain addresses, no expiring signatures (the bucket policy allows reading menu/*).
+            'querystring_auth': False,
+            'default_acl': None,  # buckets have ACLs switched off these days; access is by bucket policy
+            # Names are already unique (menu/<slug>-<8 random hex>.webp), so skip the "does it exist?" check
+            # before each upload: it needs extra S3 permission (s3:ListBucket), without which S3 answers 403.
+            'file_overwrite': True,
+            'custom_domain': _s3_domain,
+            # every upload gets a new random name, so browsers may keep it for a year
+            'object_parameters': {'CacheControl': 'public, max-age=31536000, immutable'},
+        },
+    }
+else:
+    _default_storage = {'BACKEND': 'django.core.files.storage.FileSystemStorage'}
+STORAGES = {
+    'default': _default_storage,
+    'staticfiles': {
+        'BACKEND': (
+            'django.contrib.staticfiles.storage.StaticFilesStorage'
+            if DEBUG
+            else 'whitenoise.storage.CompressedStaticFilesStorage'
+        )
+    },
+}
 
 # Django REST framework
 REST_FRAMEWORK = {
@@ -178,6 +220,10 @@ REST_FRAMEWORK = {
         'auth': os.getenv('AUTH_THROTTLE_RATE', '30/hour'),
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # Who the rate limits count. 0 uses the connecting address and ignores X-Forwarded-For (otherwise anyone
+    # could dodge the limits by inventing that header). Behind one reverse proxy (DJANGO_BEHIND_PROXY) the
+    # real visitor is the last X-Forwarded-For entry, which the proxy sets itself.
+    'NUM_PROXIES': 1 if env_bool('DJANGO_BEHIND_PROXY') else 0,
 }
 
 # API docs (Swagger UI at /api/docs/, ReDoc at /api/redoc/, raw schema at /api/schema/)
@@ -206,6 +252,14 @@ if DEBUG:
         r'^http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+):\d+$',
     ]
 
+# Running behind a reverse proxy that terminates HTTPS (Caddy in deploy/): trust its forwarded headers
+# and only send cookies over HTTPS. Only switch this on when the API is reachable through the proxy alone,
+# because the forwarded headers can be forged by anyone who can reach the API directly.
+if env_bool('DJANGO_BEHIND_PROXY'):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
 # Flat delivery charge in BDT, added to delivery orders (takeaway is free).
 # Keep in sync with `deliveryFee` in the storefront's src/data/site.ts.
 DELIVERY_FEE = int(os.getenv('DELIVERY_FEE', '80'))
@@ -214,3 +268,12 @@ DELIVERY_FEE = int(os.getenv('DELIVERY_FEE', '80'))
 PICKUP_LEAD_MINUTES = int(os.getenv('PICKUP_LEAD_MINUTES', '30'))  # earliest pickup, from now
 PICKUP_STEP_MINUTES = 15  # pickup times are on the quarter hour
 PICKUP_DAYS_AHEAD = 0  # 0 = today only, 1 = today and tomorrow
+
+# Show server errors (with their traceback) in the console / `docker compose logs`. Django's default hides
+# them when DEBUG is off, which leaves a bare "Server Error (500)" with nothing to look at.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {'console': {'class': 'logging.StreamHandler'}},
+    'loggers': {'django.request': {'handlers': ['console'], 'level': 'ERROR'}},
+}

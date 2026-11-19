@@ -1,0 +1,12 @@
+# Caddy gets and renews HTTPS certificates by itself for the names below.
+# (Ports 80 and 443 must be open to the internet, and the names must point at this server.)
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:8000
+}

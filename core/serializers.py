@@ -3,6 +3,7 @@ import re
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.db import transaction
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
@@ -38,10 +39,21 @@ class MenuItemSerializer(serializers.ModelSerializer):
     # price is the regular price; offer_price is the lower price today when it is one of today's offers
     # (otherwise null). Orders are charged offer_price when there is one.
     offer_price = serializers.IntegerField(read_only=True, allow_null=True)
+    # the product's own picture (a full URL, normally on S3), or null: the storefront then shows a placeholder
+    image = serializers.SerializerMethodField()
 
     class Meta:
         model = MenuItem
-        fields = ["id", "name", "price", "offer_price", "category", "category_name", "blurb", "featured"]
+        fields = ["id", "name", "price", "offer_price", "category", "category_name", "blurb", "image", "featured"]
+
+    @extend_schema_field(OpenApiTypes.URI)
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        url = obj.image.url
+        request = self.context.get("request")
+        # S3 gives a full address already; local files give "/media/..." which needs this server's address
+        return request.build_absolute_uri(url) if request and url.startswith("/") else url
 
 
 class PickupSlotSerializer(serializers.Serializer):

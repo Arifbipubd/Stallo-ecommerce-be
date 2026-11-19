@@ -39,6 +39,13 @@ docker compose up --build        # API on http://localhost:8000, docs at /api/do
 - It runs one worker with threads on purpose: SQLite prefers one process and the rate limits stay accurate.
   For heavier traffic, switch to PostgreSQL first.
 
+## Deploying to AWS
+
+`deploy/` has everything for one EC2 server (storefront + API + automatic HTTPS with Caddy, nightly backups):
+see [deploy/DEPLOY.md](deploy/DEPLOY.md). It sets `DJANGO_BEHIND_PROXY=True`, which makes the API trust the
+proxy's forwarded headers (real visitor IP for rate limits, HTTPS, secure cookies). Leave it off when the API is
+reachable directly: with it off, `X-Forwarded-For` is ignored so nobody can dodge the rate limits.
+
 ## API
 
 Interactive docs (Swagger UI): <http://localhost:8000/api/docs/> · ReDoc: `/api/redoc/` · OpenAPI schema: `/api/schema/`.
@@ -50,6 +57,7 @@ After pulling this change run `pip install -r requirements.txt` once.
 | GET | `/api/menu/` | menu items that can currently be ordered (each has its `category` id and `category_name`) |
 | GET | `/api/categories/` | active menu categories, in display order |
 | GET | `/api/offers/today/` | the menu items the admin picked for Today's offers, in order (same shape as `/api/menu/`) |
+| GET | `/api/addons/` | the menu items the admin picked as extras ("Make it a meal"), in order (same shape as `/api/menu/`) |
 | GET | `/api/outlets/` | active outlets |
 | GET | `/api/pickup-slots/` | takeaway pickup times for the rest of today, plus `open_now` |
 | POST | `/api/orders/` | place an order (returns the receipt; linked to the account if logged in) |
@@ -136,6 +144,39 @@ the offer price and what the customer saves. The offer price must be lower than 
   added in admin will not appear on the site until the storefront reads `/api/menu/`.
 - The first `seed_menu` run adds the four offers the storefront used to hard-code (without prices) and never
   refills the list afterwards.
+
+## Product pictures
+
+In admin, **Menu items → Picture** is an uploader. Choose any photo (JPG, PNG or WebP, up to 8 MB). Saving resizes it
+(longest side 1200 px), turns it into WebP (about 100 KB), stores it and shows a preview. The picture is
+**required**: a product can't be saved in admin without one (to change it, upload a new one).
+
+- **Where files go:** with `AWS_STORAGE_BUCKET_NAME` set, to that S3 bucket (`menu/<product>-<random>.webp`);
+  otherwise to the `media/` folder (`/data/media` in Docker), served by this server at `/media/...` for local work.
+  AWS credentials come from the server's IAM role, or from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. See
+  `deploy/DEPLOY.md` (section 4b) for the bucket, its policy and the role.
+- **What the database keeps:** only the file's name (`menu/fries-1a2b3c4d.webp`). The public address is built from it
+  when the API answers, so changing the bucket's region or putting CloudFront in front needs no data change.
+  Every upload gets a new random name, so browsers and CDNs can cache pictures for a year.
+- **API:** `/api/menu/`, `/api/offers/today/` and `/api/addons/` carry `image`: the full URL, or `null` for the
+  original starter items that have no picture yet (the storefront then shows a plain placeholder).
+- Replacing or clearing a picture, or deleting the product, deletes the old file from storage.
+
+## Add-ons (extras)
+
+In admin, open **Add-ons**, add a menu item (search the whole menu by name) and set the order. Untick *Active* to
+stop suggesting it without removing it. These are the extras shown under "Make it a meal" when a customer taps **+**
+on a dish. The item itself (name, price, category) is still managed under Menu items.
+
+- `GET /api/addons/` returns them in order, in the same shape as `/api/menu/` (with `price` and `offer_price`).
+- An add-on is an ordinary order line: the storefront adds it to the cart and sends it in `items` like any other
+  item, so there is nothing extra to send when ordering. It is charged the item's current price, so an active
+  Today's offer on it applies.
+- Items that are switched off, or in a hidden category, are not returned. The list is the same for every dish (the
+  storefront leaves out the dish being added).
+- Databases that already had a menu get the six extras the storefront used to hard-code (fries, wrap, nuggets,
+  pops, hot wings, garlic wings) when the migration runs; fresh ones get them from the first `seed_menu`. Neither
+  refills the list after the admin has made their own picks.
 
 ## Menu data
 

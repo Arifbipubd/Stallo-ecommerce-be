@@ -1,9 +1,12 @@
 asgiref==3.11.1
+boto3==1.42.97
 django-cors-headers==4.9.0
+django-storages==1.14.6
 Django==4.2.30
 djangorestframework==3.16.1
 drf-spectacular==0.30.0
 gunicorn==23.0.0
+pillow==11.3.0
 python-dotenv==1.2.1
 sqlparse==0.5.5
 typing_extensions==4.16.0

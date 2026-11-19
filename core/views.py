@@ -78,6 +78,26 @@ class TodaysOffersView(generics.ListAPIView):
 
 
 @extend_schema(
+    tags=["Menu"],
+    summary="Add-ons (extras suggested with an item)",
+    description=(
+        "The menu items the admin picked as extras, in order. Same shape as /api/menu/. To buy one, add it to the "
+        "order like any other item: it is priced like the menu (`offer_price` if it has one, else `price`)."
+    ),
+)
+class AddOnsView(generics.ListAPIView):
+    serializer_class = MenuItemSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return (
+            MenuItem.objects.filter(addon__is_active=True, is_available=True, category__is_active=True)
+            .select_related("category", "offer")
+            .order_by("addon__sort_order", "addon__id")
+        )
+
+
+@extend_schema(
     tags=["Orders"],
     summary="Takeaway pickup times",
     description=(

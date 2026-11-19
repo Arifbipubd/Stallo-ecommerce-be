@@ -3,7 +3,11 @@ import secrets
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.utils.text import slugify
+
+from .images import menu_image_path, optimize, validate_image_size
 
 # No 0/O/1/I so order numbers are easy to read out over the phone.
 _ORDER_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -58,6 +62,11 @@ class MenuItem(models.Model):
     price = models.PositiveIntegerField(help_text="Price in BDT (whole taka).")
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="items")
     blurb = models.CharField(max_length=300, blank=True)
+    image = models.ImageField(
+        upload_to=menu_image_path,
+        validators=[validate_image_size],
+        help_text="Required. Any photo up to 8 MB: it is resized and stored for you.",
+    )
     featured = models.BooleanField(default=False)
     is_available = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
@@ -68,7 +77,14 @@ class MenuItem(models.Model):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = make_unique_slug(self, self.name, "item")
+        old_image = ""
+        if self.pk:
+            old_image = MenuItem.objects.filter(pk=self.pk).values_list("image", flat=True).first() or ""
+        if self.image and not self.image._committed:  # a new upload: shrink it before it is stored
+            self.image = optimize(self.image)
         super().save(*args, **kwargs)
+        if old_image and old_image != (self.image.name or ""):  # replaced or removed: don't leave the old file behind
+            self.image.storage.delete(old_image)
 
     @property
     def offer_price(self):
@@ -92,6 +108,12 @@ class MenuItem(models.Model):
 
     def __str__(self):
         return f"{self.name} (৳{self.price})"
+
+
+@receiver(post_delete, sender=MenuItem)
+def _delete_picture_with_item(sender, instance, **kwargs):
+    if instance.image:
+        instance.image.storage.delete(instance.image.name)
 
 
 class TodaysOffer(models.Model):
@@ -121,6 +143,28 @@ class TodaysOffer(models.Model):
             raise ValidationError(
                 {"offer_price": f"The offer price must be lower than the regular price (৳{item.price})."}
             )
+
+    def __str__(self):
+        return self.menu_item.name
+
+
+class AddOn(models.Model):
+    """
+    A menu item the admin offers as an extra ("Make it a meal") when a customer adds something to
+    the cart. The item itself (name, price, category) is still managed under Menu items: this only
+    says which ones to suggest, and in what order. An extra is sold at the item's current price,
+    so an active Today's offer on it applies here too.
+    """
+
+    menu_item = models.OneToOneField(MenuItem, on_delete=models.CASCADE, related_name="addon")
+    sort_order = models.PositiveIntegerField(default=0, help_text="Smaller numbers show first.")
+    is_active = models.BooleanField(default=True, help_text="Untick to stop suggesting it without removing it.")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        verbose_name = "add-on"
+        verbose_name_plural = "add-ons"
 
     def __str__(self):
         return self.menu_item.name

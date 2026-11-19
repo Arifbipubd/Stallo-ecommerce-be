@@ -11,5 +11,6 @@ staticfiles/
 media/
 Dockerfile
 docker-compose.yml
+deploy/
 .dockerignore
 README.md

@@ -1,7 +1,9 @@
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.conf import settings
 from django.core.management import call_command
+from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APITestCase
 from rest_framework.throttling import ScopedRateThrottle
@@ -135,6 +137,27 @@ class CreateOrderTests(ApiTestBase):
         with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"orders": "2/hour"}):
             codes = [self.client.post(self.url, self.delivery_payload(), format="json").status_code for _ in range(3)]
         self.assertEqual(codes, [201, 201, 429])
+
+
+class ProxyClientIpTests(ApiTestBase):
+    """Behind the reverse proxy each visitor must be rate limited on their own address."""
+
+    url = "/api/orders/"
+
+    def post_as(self, ip):
+        return self.client.post(self.url, self.delivery_payload(), format="json", HTTP_X_FORWARDED_FOR=ip).status_code
+
+    def test_visitors_have_separate_limits_when_a_proxy_is_trusted(self):
+        from rest_framework.settings import api_settings
+
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"orders": "1/hour"}), patch.object(api_settings, "NUM_PROXIES", 1):
+            codes = [self.post_as("203.0.113.1"), self.post_as("203.0.113.1"), self.post_as("203.0.113.2")]
+        self.assertEqual(codes, [201, 429, 201])
+
+    def test_without_a_proxy_the_forwarded_header_is_ignored(self):
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"orders": "1/hour"}):
+            codes = [self.post_as("203.0.113.1"), self.post_as("203.0.113.2")]
+        self.assertEqual(codes, [201, 429])  # a visitor cannot dodge the limit by making up an address
 
 
 class DeliveryFeeTests(ApiTestBase):
@@ -434,6 +457,8 @@ class AdminPanelTests(ApiTestBase):
             "/admin/core/menuitem/add/",
             "/admin/core/todaysoffer/",
             "/admin/core/todaysoffer/add/",
+            "/admin/core/addon/",
+            "/admin/core/addon/add/",
         ]:
             self.assertEqual(self.client.get(url).status_code, 200, url)
 
@@ -448,6 +473,23 @@ class AdminPanelTests(ApiTestBase):
         self.assertEqual(res.status_code, 302, getattr(res, "context", None) and res.context["adminform"].form.errors)
         self.assertEqual([i["id"] for i in self.client.get("/api/offers/today/").json()], ["fries"])
 
+    def test_pick_an_addon_from_the_menu_in_admin(self):
+        from .models import AddOn
+
+        AddOn.objects.all().delete()
+        leg = MenuItem.objects.get(slug="bbq-leg")
+        res = self.client.post("/admin/core/addon/add/", {"menu_item": leg.pk, "sort_order": 1, "is_active": "on"})
+        self.assertEqual(res.status_code, 302, getattr(res, "context", None) and res.context["adminform"].form.errors)
+        self.client.logout()
+        self.assertEqual([i["id"] for i in self.client.get("/api/addons/").json()], ["bbq-leg"])
+
+    def test_menu_item_autocomplete_works_for_the_addon_picker(self):
+        res = self.client.get(
+            "/admin/autocomplete/", {"term": "fries", "app_label": "core", "model_name": "addon", "field_name": "menu_item"}
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(any("Fries" in r["text"] for r in res.json()["results"]))
+
     def test_menu_item_autocomplete_works_for_the_offer_picker(self):
         res = self.client.get(
             "/admin/autocomplete/", {"term": "fries", "app_label": "core", "model_name": "todaysoffer", "field_name": "menu_item"}
@@ -455,6 +497,22 @@ class AdminPanelTests(ApiTestBase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(any("Fries" in r["text"] for r in res.json()["results"]))
 
+    def test_a_product_cannot_be_added_without_a_picture(self):
+        drinks = Category.objects.create(name="Drinks")
+        res = self.client.post(
+            "/admin/core/menuitem/add/",
+            {"name": "Cold Coffee", "category": drinks.pk, "price": 150, "blurb": "", "is_available": "on", "sort_order": 50},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("image", res.context["adminform"].form.errors)
+        self.assertFalse(MenuItem.objects.filter(name="Cold Coffee").exists())
+
+    @override_settings(
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+        }
+    )
     def test_add_category_and_product_in_admin_without_typing_a_slug(self):
         res = self.client.post(
             "/admin/core/category/add/", {"name": "Drinks", "sort_order": 5, "is_active": "on"}
@@ -465,7 +523,15 @@ class AdminPanelTests(ApiTestBase):
 
         res = self.client.post(
             "/admin/core/menuitem/add/",
-            {"name": "Cold Coffee", "category": drinks.pk, "price": 150, "blurb": "", "is_available": "on", "sort_order": 50},
+            {
+                "name": "Cold Coffee",
+                "category": drinks.pk,
+                "price": 150,
+                "blurb": "",
+                "is_available": "on",
+                "sort_order": 50,
+                "image": picture(width=300, height=300),
+            },
         )
         self.assertEqual(res.status_code, 302, getattr(res, "context", None) and res.context["adminform"].form.errors)
         item = MenuItem.objects.get(name="Cold Coffee")
@@ -499,7 +565,7 @@ class TodaysOfferTests(ApiTestBase):
     def test_response_has_the_menu_item_shape(self):
         first = self.client.get(self.url).json()[0]
         self.assertEqual(
-            set(first), {"id", "name", "price", "offer_price", "category", "category_name", "blurb", "featured"}
+            set(first), {"id", "name", "price", "offer_price", "category", "category_name", "blurb", "image", "featured"}
         )
 
     def test_admin_can_pick_any_menu_item_and_order_them(self):
@@ -535,6 +601,283 @@ class TodaysOfferTests(ApiTestBase):
     def test_offer_price_follows_the_menu_item(self):
         MenuItem.objects.filter(slug="bucket-26").update(price=999)
         self.assertEqual(self.client.get(self.url).json()[0]["price"], 999)
+
+
+class AddOnTests(ApiTestBase):
+    url = "/api/addons/"
+
+    def slugs(self):
+        return [i["id"] for i in self.client.get(self.url).json()]
+
+    def test_starter_addons_come_from_the_seed_in_order(self):
+        self.assertEqual(self.slugs(), ["fries", "wrap", "nuggets", "pops", "hot-wings", "garlic-wings"])
+
+    def test_response_has_the_menu_item_shape(self):
+        first = self.client.get(self.url).json()[0]
+        self.assertEqual(
+            set(first), {"id", "name", "price", "offer_price", "category", "category_name", "blurb", "image", "featured"}
+        )
+
+    def test_admin_can_pick_any_menu_item_and_order_them(self):
+        from .models import AddOn
+
+        AddOn.objects.all().delete()
+        AddOn.objects.create(menu_item=MenuItem.objects.get(slug="bbq-leg"), sort_order=2)
+        AddOn.objects.create(menu_item=MenuItem.objects.get(slug="fries"), sort_order=1)
+        self.assertEqual(self.slugs(), ["fries", "bbq-leg"])
+
+    def test_switched_off_or_unavailable_items_are_not_suggested(self):
+        from .models import AddOn
+
+        AddOn.objects.filter(menu_item__slug="wrap").update(is_active=False)
+        MenuItem.objects.filter(slug="pops").update(is_available=False)
+        self.assertEqual(self.slugs(), ["fries", "nuggets", "hot-wings", "garlic-wings"])
+
+    def test_an_item_cannot_be_an_addon_twice(self):
+        from django.db import IntegrityError, transaction
+        from .models import AddOn
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            AddOn.objects.create(menu_item=MenuItem.objects.get(slug="fries"))
+
+    def test_seeding_again_does_not_bring_back_removed_addons(self):
+        from .models import AddOn
+
+        AddOn.objects.all().delete()
+        AddOn.objects.create(menu_item=MenuItem.objects.get(slug="bbq-leg"))
+        call_command("seed_menu", verbosity=0)
+        self.assertEqual(self.slugs(), ["bbq-leg"])
+
+    def test_an_active_offer_on_an_addon_shows_and_is_charged(self):
+        from .models import TodaysOffer
+
+        TodaysOffer.objects.create(menu_item=MenuItem.objects.get(slug="fries"), offer_price=100)  # fries cost 160
+        fries = {i["id"]: i for i in self.client.get(self.url).json()}["fries"]
+        self.assertEqual((fries["price"], fries["offer_price"]), (160, 100))
+        order = self.client.post(
+            "/api/orders/",
+            self.delivery_payload(items=[{"id": "fries", "qty": 2}]),
+            format="json",
+        )
+        self.assertEqual(order.status_code, 201, order.content)
+        self.assertEqual(order.json()["total"], 200 + 80)
+
+
+def picture(width=3000, height=2000, fmt="JPEG", orientation=None, color=(200, 40, 20)):
+    """An uploaded picture, as the admin form would send it."""
+    from io import BytesIO
+
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+
+    img = Image.new("RGB", (width, height), color)
+    out = BytesIO()
+    extra = {}
+    if orientation:
+        exif = img.getexif()
+        exif[0x0112] = orientation
+        extra["exif"] = exif
+    img.save(out, format=fmt, **extra)
+    return SimpleUploadedFile(f"photo.{fmt.lower()}", out.getvalue(), content_type=f"image/{fmt.lower()}")
+
+
+@override_settings(
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+)
+class ProductPictureTests(ApiTestBase):
+    def item(self, slug="fries"):
+        return MenuItem.objects.get(slug=slug)
+
+    def attach(self, slug="fries", **kwargs):
+        item = self.item(slug)
+        item.image = picture(**kwargs)
+        item.save()
+        item.refresh_from_db()
+        return item
+
+    def test_items_have_no_picture_until_one_is_uploaded(self):
+        for row in self.client.get(reverse("menu")).json():
+            self.assertIsNone(row["image"])
+
+    def test_upload_is_shrunk_and_stored_as_webp(self):
+        from PIL import Image
+
+        item = self.attach(width=3000, height=2000)
+        self.assertRegex(item.image.name, r"^menu/fries-[0-9a-f]{8}\.webp$")
+        with item.image.open("rb") as f, Image.open(f) as stored:
+            self.assertEqual(stored.format, "WEBP")
+            self.assertEqual(max(stored.size), 1200)
+            self.assertEqual(stored.size, (1200, 800))  # same proportions
+
+    def test_small_pictures_are_not_enlarged(self):
+        from PIL import Image
+
+        item = self.attach(width=400, height=300)
+        with item.image.open("rb") as f, Image.open(f) as stored:
+            self.assertEqual(stored.size, (400, 300))
+
+    def test_phone_photos_are_turned_the_right_way_up(self):
+        from PIL import Image
+
+        item = self.attach(width=200, height=100, orientation=6)  # "rotate 90 degrees" in the metadata
+        with item.image.open("rb") as f, Image.open(f) as stored:
+            self.assertEqual(stored.size, (100, 200))
+
+    def test_png_with_transparency_is_kept(self):
+        from io import BytesIO
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        out = BytesIO()
+        Image.new("RGBA", (50, 50), (255, 0, 0, 0)).save(out, format="PNG")
+        item = self.item()
+        item.image = SimpleUploadedFile("cutout.png", out.getvalue(), content_type="image/png")
+        item.save()
+        with item.image.open("rb") as f, Image.open(f) as stored:
+            self.assertIn("A", stored.getbands())
+
+    def test_api_gives_the_full_address_of_the_picture(self):
+        item = self.attach()
+        row = next(i for i in self.client.get(reverse("menu")).json() if i["id"] == "fries")
+        self.assertTrue(row["image"].startswith("http://testserver/media/menu/fries-"), row["image"])
+        self.assertTrue(row["image"].endswith(item.image.name.split("/")[-1]))
+
+    def test_offers_and_addons_carry_the_picture_too(self):
+        self.attach("fries")  # an add-on
+        self.attach("bucket-26")  # an offer
+        addon = next(i for i in self.client.get("/api/addons/").json() if i["id"] == "fries")
+        offer = next(i for i in self.client.get("/api/offers/today/").json() if i["id"] == "bucket-26")
+        self.assertIn("/media/menu/fries-", addon["image"])
+        self.assertIn("/media/menu/bucket-26-", offer["image"])
+
+    def test_replacing_a_picture_removes_the_old_file(self):
+        from django.core.files.storage import default_storage
+
+        old = self.attach().image.name
+        new = self.attach().image.name
+        self.assertNotEqual(old, new)
+        self.assertFalse(default_storage.exists(old))
+        self.assertTrue(default_storage.exists(new))
+
+    def test_clearing_or_deleting_removes_the_file(self):
+        from django.core.files.storage import default_storage
+
+        item = self.attach()
+        name = item.image.name
+        item.image = ""
+        item.save()
+        self.assertFalse(default_storage.exists(name))
+        self.assertIsNone(next(i for i in self.client.get(reverse("menu")).json() if i["id"] == "fries")["image"])
+
+        name = self.attach().image.name
+        self.item().delete()
+        self.assertFalse(default_storage.exists(name))
+
+    def test_saving_without_a_new_upload_keeps_the_picture(self):
+        from django.core.files.storage import default_storage
+
+        item = self.attach()
+        name = item.image.name
+        item.price = 170
+        item.save()
+        item.refresh_from_db()
+        self.assertEqual(item.image.name, name)
+        self.assertTrue(default_storage.exists(name))
+
+    def test_something_that_is_not_a_picture_is_refused_in_admin(self):
+        from django.contrib.auth import get_user_model
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.client.force_login(get_user_model().objects.create_superuser("boss", "boss@example.com", "pw-12345"))
+        res = self.client.post(
+            "/admin/core/menuitem/add/",
+            {
+                "name": "Coleslaw",
+                "category": Category.objects.get(slug="sides").pk,
+                "price": 90,
+                "image": SimpleUploadedFile("notes.jpg", b"this is not an image", content_type="image/jpeg"),
+                "is_available": "on",
+                "sort_order": 60,
+            },
+        )
+        self.assertEqual(res.status_code, 200)  # the form is shown again with an error
+        self.assertIn("image", res.context["adminform"].form.errors)
+        self.assertFalse(MenuItem.objects.filter(name="Coleslaw").exists())
+
+    def test_huge_files_are_refused(self):
+        from unittest import mock
+
+        from django.core.exceptions import ValidationError
+
+        item = self.item()
+        item.image = picture(width=200, height=200)
+        with mock.patch("core.images.MAX_UPLOAD_BYTES", 100), self.assertRaises(ValidationError):
+            item.full_clean()
+
+    def test_upload_a_picture_with_a_new_product_in_admin(self):
+        from django.contrib.auth import get_user_model
+
+        self.client.force_login(get_user_model().objects.create_superuser("boss", "boss@example.com", "pw-12345"))
+        cat = Category.objects.get(slug="sides")
+        res = self.client.post(
+            "/admin/core/menuitem/add/",
+            {
+                "name": "Coleslaw",
+                "category": cat.pk,
+                "price": 90,
+                "blurb": "",
+                "image": picture(width=900, height=600),
+                "is_available": "on",
+                "sort_order": 60,
+            },
+        )
+        self.assertEqual(res.status_code, 302, getattr(res, "context", None) and res.context["adminform"].form.errors)
+        self.client.logout()
+        row = next(i for i in self.client.get(reverse("menu")).json() if i["id"] == "coleslaw")
+        self.assertIn("/media/menu/coleslaw-", row["image"])
+
+
+class S3StorageSettingsTests(SimpleTestCase):
+    """With a bucket named, pictures go to S3 and are shown by their plain public address."""
+
+    def settings_output(self, **env):
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import django, json; django.setup();"
+            "from django.conf import settings; from django.core.files.storage import default_storage as d;"
+            "print(json.dumps([settings.STORAGES['default']['BACKEND'], d.url('menu/x.webp')]))"
+        )
+        full = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
+        full.update(AWS_STORAGE_BUCKET_NAME="", AWS_S3_REGION_NAME="", AWS_S3_CUSTOM_DOMAIN="")  # .env must not leak in
+        full.update(DJANGO_SETTINGS_MODULE="config.settings", AWS_ACCESS_KEY_ID="test", AWS_SECRET_ACCESS_KEY="test", **env)
+        out = subprocess.run([sys.executable, "-c", code], env=full, capture_output=True, text=True, cwd=str(settings.BASE_DIR))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        import json
+
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def test_no_bucket_means_local_disk(self):
+        backend, url = self.settings_output()
+        self.assertEqual(backend, "django.core.files.storage.FileSystemStorage")
+        self.assertEqual(url, "/media/menu/x.webp")
+
+    def test_bucket_means_s3_with_plain_addresses(self):
+        backend, url = self.settings_output(AWS_STORAGE_BUCKET_NAME="stallo-media", AWS_S3_REGION_NAME="ap-southeast-1")
+        self.assertEqual(backend, "storages.backends.s3.S3Storage")
+        self.assertTrue(url.startswith("https://stallo-media.s3.ap-southeast-1.amazonaws.com/menu/x.webp"), url)
+        self.assertNotIn("Signature", url)
+        self.assertNotIn("Expires", url)
+
+    def test_custom_domain_is_used_when_given(self):
+        _, url = self.settings_output(AWS_STORAGE_BUCKET_NAME="stallo-media", AWS_S3_CUSTOM_DOMAIN="cdn.example.com")
+        self.assertEqual(url, "https://cdn.example.com/menu/x.webp")
 
 
 class PickupTimeTests(ApiTestBase):

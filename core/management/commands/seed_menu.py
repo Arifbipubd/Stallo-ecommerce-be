@@ -3,7 +3,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 
-from core.models import Category, MenuItem, Outlet, TodaysOffer
+from core.models import AddOn, Category, MenuItem, Outlet, TodaysOffer
 
 # Names for the category ids used in menu.json. Existing categories keep any name/order edited in admin.
 CATEGORY_NAMES = {
@@ -16,6 +16,9 @@ CATEGORY_NAMES = {
 
 # What the storefront showed as "Today's offers" before the admin could pick them.
 STARTER_OFFERS = ["bucket-26", "bogo-burger", "pkg-3", "pkg-10"]
+
+# What the storefront suggested as extras before the admin could pick them.
+STARTER_ADDONS = ["fries", "wrap", "nuggets", "pops", "hot-wings", "garlic-wings"]
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "menu.json"
 
@@ -57,4 +60,9 @@ class Command(BaseCommand):
                 item = MenuItem.objects.filter(slug=slug).first()
                 if item:
                     TodaysOffer.objects.create(menu_item=item, sort_order=order)
+        if not AddOn.objects.exists():  # likewise: never refill after the admin has made their own picks
+            for order, slug in enumerate(STARTER_ADDONS):
+                item = MenuItem.objects.filter(slug=slug).first()
+                if item:
+                    AddOn.objects.create(menu_item=item, sort_order=order)
         self.stdout.write(self.style.SUCCESS(f"Seeded {len(data['items'])} menu items and {len(data['outlets'])} outlets."))
