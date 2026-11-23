@@ -98,7 +98,7 @@ class OrderCreateSerializer(serializers.Serializer):
 
     mode = serializers.ChoiceField(choices=Order.Mode.choices)
     name = serializers.CharField(min_length=2, max_length=120)
-    phone = serializers.CharField(max_length=20)
+    phone = serializers.CharField(max_length=20, allow_blank=False, trim_whitespace=True)
     address = serializers.CharField(required=False, allow_blank=True, max_length=500, default="")
     landmark = serializers.CharField(required=False, allow_blank=True, max_length=200, default="")
     outlet = serializers.CharField(required=False, allow_blank=True, max_length=60, default="")
@@ -111,6 +111,8 @@ class OrderCreateSerializer(serializers.Serializer):
     items = OrderLineInputSerializer(many=True, allow_empty=False)
 
     def validate_phone(self, value):
+        if not value or not str(value).strip():
+            raise serializers.ValidationError("Mobile number is required.")
         return normalize_phone(value)
 
     def validate_items(self, value):
