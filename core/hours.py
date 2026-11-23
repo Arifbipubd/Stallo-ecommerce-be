@@ -3,8 +3,8 @@ Opening hours and takeaway pickup slots.
 
 Outlets open 10:00 every day and close at 22:00 (Sunday to Thursday) or 23:00 (Friday and
 Saturday). Customers collect on a 15-minute grid, at least PICKUP_LEAD_MINUTES from now, on the
-same day (PICKUP_DAYS_AHEAD allows more), and no later than one step before closing. Keep the wording on the storefront
-(`hours` in src/data/site.ts) in line with this.
+today through PICKUP_DAYS_AHEAD more days (default one week), and no later than one step before closing. Keep the
+wording on the storefront (`hours` in src/data/site.ts) in line with this.
 """
 
 from __future__ import annotations

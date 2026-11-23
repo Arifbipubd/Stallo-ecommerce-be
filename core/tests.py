@@ -912,14 +912,18 @@ class PickupTimeTests(ApiTestBase):
         today = self.slots(at_dhaka(20, 14))["days"][0]  # Friday
         self.assertEqual(today["slots"][-1]["label"], "10:45 pm")
 
-    def test_only_today_is_offered(self):
+    def test_today_through_next_week_is_offered(self):
         data = self.slots(at_dhaka(18, 14))
-        self.assertEqual([d["label"] for d in data["days"]], ["Today"])
+        labels = [d["label"] for d in data["days"]]
+        self.assertEqual(labels[0], "Today")
+        self.assertEqual(labels[1], "Tomorrow")
+        self.assertEqual(len(labels), 8)  # today + 7 days ahead
 
-    def test_after_closing_nothing_is_left(self):
+    def test_after_closing_today_still_offers_later_days(self):
         data = self.slots(at_dhaka(18, 22, 30))
         self.assertFalse(data["open_now"])
-        self.assertEqual(data["days"], [])
+        self.assertEqual(data["days"][0]["label"], "Tomorrow")
+        self.assertEqual(len(data["days"]), 7)
 
     def test_before_opening_today_starts_at_opening(self):
         data = self.slots(at_dhaka(18, 7))
@@ -947,11 +951,15 @@ class PickupTimeTests(ApiTestBase):
         self.assertEqual(res.status_code, 201)
         self.assertIsNone(res.json()["pickup_time"])
 
-    def test_another_day_is_rejected(self):
-        res = self.book(at_dhaka(18, 14), at_dhaka(19, 12))  # tomorrow
+    def test_tomorrow_and_next_week_are_accepted(self):
+        now = at_dhaka(18, 14)
+        self.assertEqual(self.book(now, at_dhaka(19, 12)).status_code, 201)  # tomorrow
+        self.assertEqual(self.book(now, at_dhaka(25, 12)).status_code, 201)  # +7 days
+
+    def test_beyond_next_week_is_rejected(self):
+        res = self.book(at_dhaka(18, 14), at_dhaka(26, 12))  # +8 days
         self.assertEqual(res.status_code, 400)
-        self.assertIn("today only", res.json()["pickup_time"][0])
-        self.assertEqual(self.book(at_dhaka(18, 14), at_dhaka(25, 12)).status_code, 400)
+        self.assertIn("too far ahead", res.json()["pickup_time"][0])
 
     def test_too_soon_is_rejected(self):
         res = self.book(at_dhaka(18, 14), at_dhaka(18, 14, 15))

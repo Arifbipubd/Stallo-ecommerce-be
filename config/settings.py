@@ -267,7 +267,7 @@ DELIVERY_FEE = int(os.getenv('DELIVERY_FEE', '80'))
 # Takeaway pickup scheduling (see core/hours.py for the opening hours).
 PICKUP_LEAD_MINUTES = int(os.getenv('PICKUP_LEAD_MINUTES', '30'))  # earliest pickup, from now
 PICKUP_STEP_MINUTES = 15  # pickup times are on the quarter hour
-PICKUP_DAYS_AHEAD = 0  # 0 = today only, 1 = today and tomorrow
+PICKUP_DAYS_AHEAD = int(os.getenv('PICKUP_DAYS_AHEAD', '7'))  # 0 = today only; 7 = today through next week
 
 # Show server errors (with their traceback) in the console / `docker compose logs`. Django's default hides
 # them when DEBUG is off, which leaves a bare "Server Error (500)" with nothing to look at.

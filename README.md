@@ -59,7 +59,7 @@ After pulling this change run `pip install -r requirements.txt` once.
 | GET | `/api/offers/today/` | the menu items the admin picked for Today's offers, in order (same shape as `/api/menu/`) |
 | GET | `/api/addons/` | the menu items the admin picked as extras ("Make it a meal"), in order (same shape as `/api/menu/`) |
 | GET | `/api/outlets/` | active outlets |
-| GET | `/api/pickup-slots/` | takeaway pickup times for the rest of today, plus `open_now` |
+| GET | `/api/pickup-slots/` | takeaway pickup times for today through next week, plus `open_now` |
 | POST | `/api/orders/` | place an order (returns the receipt; linked to the account if logged in) |
 | POST | `/api/auth/register/` | create a customer account: `name`, `phone`, `password` (6+ chars) |
 | POST | `/api/auth/login/` | log in with `phone` + `password` |
@@ -103,7 +103,7 @@ simple for older customers). Register/login return a `token`; send it as
   returns `subtotal`, `delivery_fee` and `total` (subtotal + fee). The storefront shows the same amount from
   `deliveryFee` in `stallo-frontend/src/data/site.ts`, so change both together.
 - Takeaway pickup: the customer can pick a time from `/api/pickup-slots/`. Times are on the quarter hour, at
-  least 30 minutes away (`PICKUP_LEAD_MINUTES`), same day only (`PICKUP_DAYS_AHEAD`), from 10:00 until 15 minutes before closing
+  least 30 minutes away (`PICKUP_LEAD_MINUTES`), today through the next week (`PICKUP_DAYS_AHEAD=7`), from 10:00 until 15 minutes before closing
   (22:00 Sunday to Thursday, 23:00 Friday and Saturday; see `core/hours.py`). A time that is off the grid, too
   soon, for another day or outside opening hours is a `400` on `pickup_time`. The receipt returns `pickup_time`
   (`null` = as soon as possible), and admin shows it in the orders list. "As soon as possible" is not checked
